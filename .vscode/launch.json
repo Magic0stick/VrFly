@@ -20,7 +20,7 @@
       "sourceMapPathOverrides": {
         "webpack:///src/*": "${webRoot}/*"
       },
-      "preLaunchTask": "npm: dev"
+      "preLaunchTask": "dev"
     },
     {
       "name": "🌐 Edge (Desktop Mode)",
@@ -29,7 +29,7 @@
       "url": "http://localhost:5173",
       "webRoot": "${workspaceFolder}/src",
       "sourceMaps": true,
-      "preLaunchTask": "npm: dev"
+      "preLaunchTask": "dev"
     },
     {
       "name": "🥽 Chrome + SteamVR Debug",
@@ -42,7 +42,7 @@
         "--enable-webxr",
         "--enable-features=WebXR,WebXRIncubations"
       ],
-      "preLaunchTask": "npm: dev"
+      "preLaunchTask": "dev"
     },
     {
       "name": "🎮 SteamVR Browser Debug",
@@ -52,7 +52,7 @@
       "url": "http://localhost:5173",
       "webRoot": "${workspaceFolder}/src",
       "sourceMaps": true,
-      "preLaunchTask": "npm: dev"
+      "preLaunchTask": "dev"
     },
     {
       "name": "🔧 TypeScript Check",
@@ -79,20 +79,19 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "preview"],
       "console": "integratedTerminal",
-      "preLaunchTask": "npm: build"
+      "preLaunchTask": "build"
     },
     {
       "name": "🎮 SteamVR + ALVR Setup",
       "type": "node",
       "request": "launch",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": ["run", "start:steamvr"],
       "console": "integratedTerminal",
       "env": {
         "VITE_VR_MODE": "steamvr",
         "VITE_ALVR_ENABLED": "true"
-      },
-      "preLaunchTask": "Check SteamVR"
+      }
     },
     {
       "name": "🥽 Oculus Quest Debug",
@@ -106,21 +105,30 @@
         "--enable-features=WebXR,WebXRIncubations",
         "--user-agent=OculusBrowser"
       ],
-      "preLaunchTask": "npm: dev"
+      "preLaunchTask": "dev:host"
     },
     {
-      "name": "🐛 Full Stack Debug (Node + Chrome)",
+      "name": "🔥 Dev + Chrome Debug",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/src",
+      "sourceMaps": true,
+      "preLaunchTask": "dev",
+      "serverReadyAction": {
+        "pattern": "ready in (\\d+)ms",
+        "uriFormat": "http://localhost:5173",
+        "action": "debugWithChrome"
+      }
+    },
+    {
+      "name": "🛠️ Install & Run",
       "type": "node",
       "request": "launch",
-      "name": "Launch Node Server",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "console": "integratedTerminal",
-      "serverReadyAction": {
-        "pattern": "- (Local|Network):\\s+(https?://\\S+)",
-        "uriFormat": "%s",
-        "action": "debugWithChrome"
-      }
+      "preLaunchTask": "install"
     }
   ],
   "compounds": [
