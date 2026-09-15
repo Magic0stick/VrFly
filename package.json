@@ -4,8 +4,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:https": "vite --https",
+    "dev:host": "vite --host",
     "build": "vite build",
-    "typecheck": "tsc --noEmit"
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext ts,tsx",
+    "clean": "rm -rf dist node_modules/.vite",
+    "start": "npm run dev",
+    "start:steamvr": "bash scripts/start-steamvr.sh",
+    "start:quest": "bash scripts/start-quest.sh",
+    "deploy": "bash scripts/deploy.sh"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",
