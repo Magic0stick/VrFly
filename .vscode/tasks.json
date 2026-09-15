@@ -1,0 +1,145 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "npm",
+      "script": "dev",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [],
+      "label": "npm: dev",
+      "detail": "Start Vite dev server",
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "type": "npm",
+      "script": "build",
+      "group": "build",
+      "problemMatcher": [],
+      "label": "npm: build",
+      "detail": "Build for production"
+    },
+    {
+      "type": "npm",
+      "script": "preview",
+      "group": "build",
+      "problemMatcher": [],
+      "label": "npm: preview",
+      "detail": "Preview production build"
+    },
+    {
+      "type": "npm",
+      "script": "typecheck",
+      "group": "build",
+      "problemMatcher": ["$tsc"],
+      "label": "npm: typecheck",
+      "detail": "TypeScript type checking"
+    },
+    {
+      "label": "Check SteamVR",
+      "type": "shell",
+      "command": "${command:checkSteamVR}",
+      "problemMatcher": [],
+      "detail": "Check if SteamVR is running"
+    },
+    {
+      "label": "Start SteamVR",
+      "type": "shell",
+      "command": "steam",
+      "args": ["-applaunch", "250820"],
+      "windows": {
+        "command": "C:\\Program Files (x86)\\Steam\\steam.exe",
+        "args": ["-applaunch", "250820"]
+      },
+      "problemMatcher": [],
+      "detail": "Launch SteamVR"
+    },
+    {
+      "label": "Build & Serve",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "build", "&&", "npm", "run", "preview"],
+      "windows": {
+        "command": "npm",
+        "args": ["run", "build", ";", "npm", "run", "preview"]
+      },
+      "group": "build",
+      "problemMatcher": [],
+      "detail": "Build and preview production"
+    },
+    {
+      "label": "Clean Build",
+      "type": "shell",
+      "command": "rm",
+      "args": ["-rf", "dist", "node_modules/.vite"],
+      "windows": {
+        "command": "rmdir",
+        "args": ["/s", "/q", "dist"]
+      },
+      "problemMatcher": [],
+      "detail": "Clean build artifacts"
+    },
+    {
+      "label": "Install Dependencies",
+      "type": "shell",
+      "command": "npm",
+      "args": ["install"],
+      "problemMatcher": [],
+      "detail": "Install npm packages"
+    },
+    {
+      "label": "Watch TypeScript",
+      "type": "npm",
+      "script": "typecheck",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "typescript",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.*):(\\d+):(\\d+):\\s+(error|warning):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^Starting compilation",
+          "endsPattern": "^Found \\d+ errors"
+        }
+      },
+      "detail": "Watch for TypeScript errors"
+    },
+    {
+      "label": "Generate VR Bundle",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "build"],
+      "env": {
+        "VITE_VR_MODE": "production",
+        "VITE_ENABLE_STEAMVR": "true",
+        "VITE_ENABLE_OCULUS": "true"
+      },
+      "problemMatcher": [],
+      "detail": "Build with all VR features enabled"
+    },
+    {
+      "label": "Dev with HTTPS (for WebXR)",
+      "type": "npm",
+      "script": "dev",
+      "env": {
+        "HTTPS": "true",
+        "VITE_VR_MODE": "development"
+      },
+      "problemMatcher": [],
+      "detail": "Start dev server with HTTPS (required for WebXR on some devices)"
+    }
+  ]
+}

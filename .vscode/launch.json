@@ -1,0 +1,138 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "🚀 Dev Server (Vite)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "🌐 Chrome (Desktop Mode)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/src",
+      "sourceMaps": true,
+      "sourceMapPathOverrides": {
+        "webpack:///src/*": "${webRoot}/*"
+      },
+      "preLaunchTask": "npm: dev"
+    },
+    {
+      "name": "🌐 Edge (Desktop Mode)",
+      "type": "msedge",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/src",
+      "sourceMaps": true,
+      "preLaunchTask": "npm: dev"
+    },
+    {
+      "name": "🥽 Chrome + SteamVR Debug",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/src",
+      "sourceMaps": true,
+      "runtimeArgs": [
+        "--enable-webxr",
+        "--enable-features=WebXR,WebXRIncubations"
+      ],
+      "preLaunchTask": "npm: dev"
+    },
+    {
+      "name": "🎮 SteamVR Browser Debug",
+      "type": "chrome",
+      "request": "attach",
+      "port": 9222,
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/src",
+      "sourceMaps": true,
+      "preLaunchTask": "npm: dev"
+    },
+    {
+      "name": "🔧 TypeScript Check",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "typecheck"],
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "openOnSessionStart"
+    },
+    {
+      "name": "📦 Build Production",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "build"],
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "openOnSessionStart"
+    },
+    {
+      "name": "🌐 Preview Build",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "preview"],
+      "console": "integratedTerminal",
+      "preLaunchTask": "npm: build"
+    },
+    {
+      "name": "🎮 SteamVR + ALVR Setup",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "console": "integratedTerminal",
+      "env": {
+        "VITE_VR_MODE": "steamvr",
+        "VITE_ALVR_ENABLED": "true"
+      },
+      "preLaunchTask": "Check SteamVR"
+    },
+    {
+      "name": "🥽 Oculus Quest Debug",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/src",
+      "sourceMaps": true,
+      "runtimeArgs": [
+        "--enable-webxr",
+        "--enable-features=WebXR,WebXRIncubations",
+        "--user-agent=OculusBrowser"
+      ],
+      "preLaunchTask": "npm: dev"
+    },
+    {
+      "name": "🐛 Full Stack Debug (Node + Chrome)",
+      "type": "node",
+      "request": "launch",
+      "name": "Launch Node Server",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "console": "integratedTerminal",
+      "serverReadyAction": {
+        "pattern": "- (Local|Network):\\s+(https?://\\S+)",
+        "uriFormat": "%s",
+        "action": "debugWithChrome"
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "🚀 Full Dev (Server + Chrome)",
+      "configurations": ["🚀 Dev Server (Vite)", "🌐 Chrome (Desktop Mode)"],
+      "stopAll": true
+    },
+    {
+      "name": "🎮 Full VR Dev (Server + SteamVR Chrome)",
+      "configurations": ["🚀 Dev Server (Vite)", "🥽 Chrome + SteamVR Debug"],
+      "stopAll": true
+    }
+  ]
+}
