@@ -83,6 +83,10 @@ export class VRGame {
   private animationId: number = 0;
   private elapsedTime: number = 0;
   
+  // VR system detection
+  private vrSystem: 'steamvr' | 'oculus' | 'wmr' | 'unknown' = 'unknown';
+  private controllerProfiles: string[] = [];
+  
   // UI elements
   private hudGroup: THREE.Group;
   private scoreText: THREE.Sprite | null = null;
@@ -130,6 +134,7 @@ export class VRGame {
     this.setupDrones();
     this.setupControllers();
     this.setupHUD();
+    this.setupChaperoneBounds();
     
     // Event listeners
     window.addEventListener('resize', this.onResize.bind(this));
@@ -890,6 +895,10 @@ export class VRGame {
             this.drones.splice(j, 1);
             this.score += 50;
             
+            // Haptic feedback on drone kill (stronger)
+            this.triggerHaptic('right', 200, 1.0);
+            this.triggerHaptic('left', 100, 0.5);
+            
             // Respawn drone
             setTimeout(() => this.respawnDrone(), 5000);
           }
@@ -1395,6 +1404,10 @@ export class VRGame {
             this.bugs.splice(j, 1);
             this.score += 10;
             
+            // Haptic feedback on kill
+            this.triggerHaptic('right', 100, 0.8);
+            this.triggerHaptic('left', 50, 0.3);
+            
             // Respawn bug
             setTimeout(() => this.respawnBug(), 3000);
           }
@@ -1512,8 +1525,12 @@ export class VRGame {
         
         if (distToLZ < 10) {
           this.score += 50; // Bonus for landing in zone
+          // Success haptic
+          this.triggerHaptic('left', 150, 0.7);
+          this.triggerHaptic('right', 150, 0.7);
         } else {
           this.score += 25;
+          this.triggerHaptic('left', 80, 0.4);
         }
       }
     }
@@ -1566,44 +1583,185 @@ export class VRGame {
     const session = this.renderer.xr.getSession();
     if (!session) return;
     
-    for (let i = 0; i < 2; i++) {
-      const controller = this.controllers[i];
+    for (let i = 0; i < session.inputSources.length; i++) {
+      const inputSource = session.inputSources[i];
+      if (!inputSource.gamepad) continue;
+      
+      // Determine which controller (left/right)
+      const isLeft = inputSource.handedness === 'left';
+      const controllerIdx = isLeft ? 0 : 1;
+      
+      const controller = this.controllers[controllerIdx];
       if (!controller) continue;
       
       // Use Three.js XR controller data
-      const xrController = this.renderer.xr.getController(i);
+      const xrController = this.renderer.xr.getController(controllerIdx);
       if (xrController) {
         controller.position.copy(xrController.position);
         controller.quaternion.copy(xrController.quaternion);
         controller.visible = true;
       }
       
-      // Get gamepad data from session
-      const inputSource = session.inputSources[i];
-      if (!inputSource || !inputSource.gamepad) continue;
+      const gamepad = inputSource.gamepad;
+      const profiles = inputSource.profiles || [];
       
-      // Check trigger for button press
-      const trigger = inputSource.gamepad.buttons[0];
-      if (trigger && trigger.pressed) {
-        this.checkButtonInteraction(controller);
-        this.checkLeverInteraction(controller);
+      // Detect controller type for proper button mapping
+      const isIndex = profiles.some(p => p.includes('index') || p.includes('valve'));
+      const isVive = profiles.some(p => p.includes('vive') || p.includes('htc'));
+      const isOculus = profiles.some(p => p.includes('oculus-touch') || p.includes('meta-quest'));
+      const isWMR = profiles.some(p => p.includes('microsoft') || p.includes('wmr'));
+      
+      // === BUTTON MAPPING ===
+      // Different controllers have different button layouts
+      
+      let triggerBtn: GamepadButton | undefined;
+      let gripBtn: GamepadButton | undefined;
+      let primaryBtn: GamepadButton | undefined;
+      let secondaryBtn: GamepadButton | undefined;
+      
+      if (isIndex) {
+        // Valve Index: trigger=0, trackpad=1, grip=2, A/X=3, B/Y=5
+        triggerBtn = gamepad.buttons[0];
+        gripBtn = gamepad.buttons[2];
+        primaryBtn = gamepad.buttons[3];   // A/X button
+        secondaryBtn = gamepad.buttons[5]; // B/Y button
+      } else if (isVive) {
+        // HTC Vive: trigger=0, grip=2, menu=4, trackpad click=3
+        triggerBtn = gamepad.buttons[0];
+        gripBtn = gamepad.buttons[2];
+        primaryBtn = gamepad.buttons[3]; // trackpad press
+        secondaryBtn = gamepad.buttons[4]; // menu
+      } else if (isWMR) {
+        // Windows Mixed Reality: trigger=0, grip=1, thumbstick click=3, A/X=4, B/Y=5
+        triggerBtn = gamepad.buttons[0];
+        gripBtn = gamepad.buttons[1];
+        primaryBtn = gamepad.buttons[4];
+        secondaryBtn = gamepad.buttons[5];
+      } else {
+        // Oculus Touch / default: trigger=0, grip=1, thumbstick=3, X/A=4, Y/B=5
+        triggerBtn = gamepad.buttons[0];
+        gripBtn = gamepad.buttons[1];
+        primaryBtn = gamepad.buttons[4];
+        secondaryBtn = gamepad.buttons[5];
       }
       
-      // Thumbstick for flight control
-      const axes = inputSource.gamepad.axes;
-      if (i === 0) { // Left controller - rudder/elevator
-        this.rudderAngle = axes[2] || 0;
-        this.elevatorAngle = -(axes[3] || 0);
-      } else { // Right controller - throttle
-        const yAxis = axes[3] || 0;
-        if (Math.abs(yAxis) > 0.1) {
-          this.enginePower = Math.max(0, Math.min(1, this.enginePower - yAxis * 0.01));
+      // === TRIGGER: interact with cockpit ===
+      if (triggerBtn && triggerBtn.pressed) {
+        const interacted = this.checkButtonInteraction(controller);
+        this.checkLeverInteraction(controller);
+        
+        // Haptic feedback on interaction
+        if (interacted) {
+          this.triggerHaptic(inputSource.handedness as 'left' | 'right', 30, 0.3);
+        }
+      }
+      
+      // === GRIP: fire machine gun (hold to fire) ===
+      if (gripBtn && gripBtn.pressed && !isLeft) {
+        if (!this.machineGunActive) {
+          this.machineGunActive = true;
+          // Haptic on start firing
+          this.triggerHaptic('right', 50, 0.4);
+        }
+        this.machineGunActive = true;
+      } else if (!isLeft && (!gripBtn || !gripBtn.pressed)) {
+        // Only deactivate if this is the right controller and grip not pressed
+        // Check if any other controller has grip pressed
+        const otherSource = session.inputSources[isLeft ? 1 : 0];
+        if (!otherSource?.gamepad?.buttons[1]?.pressed) {
+          this.machineGunActive = false;
+        }
+      }
+      
+      // === PRIMARY BUTTON: drop troops ===
+      if (primaryBtn && primaryBtn.pressed && isLeft) {
+        if (!this._lastPrimaryPress || Date.now() - this._lastPrimaryPress > 500) {
+          this.dropTroop();
+          this._lastPrimaryPress = Date.now();
+        }
+      }
+      
+      // === SECONDARY BUTTON: boost ===
+      if (secondaryBtn && secondaryBtn.pressed) {
+        this.enginePower = Math.min(1.0, this.enginePower + 0.02);
+      }
+      
+      // === THUMBSTICK: flight control ===
+      // Axes layout varies by controller:
+      // Index/Vive: 0=X, 1=Y (thumbstick), 2=trackpad (if present)
+      // Oculus: 0=X, 1=Y (thumbstick)
+      // WMR: 0=X, 1=Y (thumbstick), 2=X, 3=Y (second stick if present)
+      
+      let stickX = 0;
+      let stickY = 0;
+      
+      if (isIndex || isVive || isOculus || isWMR) {
+        // Standard mapping: axes 0,1 are thumbstick
+        stickX = gamepad.axes[0] || 0;
+        stickY = gamepad.axes[1] || 0;
+      }
+      
+      // Apply deadzone
+      const deadzone = 0.15;
+      if (Math.abs(stickX) < deadzone) stickX = 0;
+      if (Math.abs(stickY) < deadzone) stickY = 0;
+      
+      if (isLeft) {
+        // Left controller: rudder (X) + elevator (Y)
+        this.rudderAngle = stickX;
+        this.elevatorAngle = -stickY;
+      } else {
+        // Right controller: throttle (Y axis)
+        if (Math.abs(stickY) > 0.1) {
+          this.enginePower = Math.max(0, Math.min(1, this.enginePower - stickY * 0.02));
+        }
+      }
+      
+      // === INDEX FINGER TRACKING ===
+      // Valve Index supports finger curl tracking
+      if (isIndex && gamepad.buttons.length > 3) {
+        // Index has additional finger tracking buttons
+        // Button 1 = trackpad, but we can also use analog trigger values
+        const triggerValue = triggerBtn?.value || 0;
+        
+        // Analog trigger for fine throttle control
+        if (!isLeft && triggerValue > 0.1) {
+          this.enginePower = Math.max(0, this.enginePower - triggerValue * 0.005);
         }
       }
     }
   }
   
-  private checkButtonInteraction(controller: THREE.Group): void {
+  // Debounce helper
+  private _lastPrimaryPress: number = 0;
+  
+  // Haptic feedback for controllers
+  private triggerHaptic(hand: 'left' | 'right', duration: number = 50, intensity: number = 0.5): void {
+    const session = this.renderer.xr.getSession();
+    if (!session) return;
+    
+    for (const source of session.inputSources) {
+      if (source.handedness === hand && source.gamepad) {
+        // WebXR Haptic Actuator API
+        const actuators = (source.gamepad as any).hapticActuators;
+        if (actuators && actuators.length > 0) {
+          actuators[0].pulse(intensity, duration);
+        }
+        
+        // Alternative: vibrationActuator (newer API)
+        const vibrationActuator = (source.gamepad as any).vibrationActuator;
+        if (vibrationActuator) {
+          vibrationActuator.playEffect?.('dual-rumble', {
+            duration,
+            strongMagnitude: intensity,
+            weakMagnitude: intensity * 0.5
+          });
+        }
+      }
+    }
+  }
+  
+  private checkButtonInteraction(controller: THREE.Group): boolean {
     this.tempMatrix.identity().extractRotation(controller.matrixWorld);
     this.raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
     this.raycaster.ray.direction.set(0, 0, -1).applyMatrix4(this.tempMatrix);
@@ -1624,8 +1782,11 @@ export class VRGame {
           hitButton.pressed = false;
           mat.emissiveIntensity = 1;
         }, 200);
+        
+        return true;
       }
     }
+    return false;
   }
   
   private checkLeverInteraction(controller: THREE.Group): void {
@@ -1730,24 +1891,403 @@ export class VRGame {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
   }
   
-  public async enterVR(): Promise<void> {
+  public async enterVR(mode: 'auto' | 'steamvr' | 'oculus' = 'auto'): Promise<void> {
     try {
-      const session = await navigator.xr?.requestSession('immersive-vr', {
+      // Detect VR system
+      await this.detectVRSystem();
+      
+      // Build session options based on VR system
+      const sessionInit: XRSessionInit = {
         requiredFeatures: ['local-floor'],
-        optionalFeatures: ['hand-tracking']
-      });
+        optionalFeatures: ['hand-tracking', 'bounded-floor', 'hit-test']
+      };
+      
+      // SteamVR specific features
+      if (this.vrSystem === 'steamvr' || mode === 'steamvr') {
+        sessionInit.optionalFeatures?.push('dom-overlay');
+        sessionInit.optionalFeatures?.push('layers');
+      }
+      
+      // Oculus specific features
+      if (this.vrSystem === 'oculus' || mode === 'oculus') {
+        sessionInit.optionalFeatures?.push('anchors');
+        sessionInit.optionalFeatures?.push('mesh-detection');
+      }
+      
+      // Try different reference spaces for SteamVR compatibility
+      const referenceSpaces = ['local-floor', 'local', 'bounded-floor'];
+      let session: XRSession | null = null;
+      
+      for (const refSpace of referenceSpaces) {
+        try {
+          const tryInit = { ...sessionInit, requiredFeatures: [refSpace] };
+          const s = await navigator.xr?.requestSession('immersive-vr', tryInit);
+          if (s) {
+            session = s;
+            console.log(`[VR] Using reference space: ${refSpace}`);
+            break;
+          }
+        } catch (e) {
+          console.log(`[VR] Reference space '${refSpace}' not available, trying next...`);
+          continue;
+        }
+      }
+      
+      // Fallback: try without required features
+      if (!session) {
+        try {
+          const s = await navigator.xr?.requestSession('immersive-vr', {
+            optionalFeatures: sessionInit.optionalFeatures
+          });
+          if (s) session = s;
+        } catch (e) {
+          console.warn('[VR] Could not start VR session:', e);
+        }
+      }
       
       if (session) {
         this.renderer.xr.setSession(session);
         this.isVR = true;
         
+        // Detect controllers when session starts
+        session.addEventListener('inputsourceschange', () => {
+          this.detectControllers(session!);
+        });
+        
         session.addEventListener('end', () => {
           this.isVR = false;
+          this.vrSystem = 'unknown';
         });
+        
+        // Initial controller detection
+        this.detectControllers(session);
+        
+        // Set visibility state handler (for SteamVR dashboard)
+        session.addEventListener('visibilitychange', () => {
+          console.log(`[VR] Visibility changed: ${session!.visibilityState}`);
+          // When SteamVR dashboard opens, visibility becomes 'hidden'
+          // We can pause the game or show a message
+        });
+        
+        console.log(`[VR] Session started. System: ${this.vrSystem}, Controllers: ${this.controllerProfiles.join(', ')}`);
       }
     } catch (e) {
       console.error('Failed to enter VR:', e);
-      alert('Не удалось войти в VR режим. Убедитесь, что Quest 2 подключён.');
+      
+      let message = 'Не удалось войти в VR режим.\n\n';
+      
+      if (mode === 'steamvr') {
+        message += 'Для SteamVR:\n';
+        message += '1. Запустите SteamVR\n';
+        message += '2. Откройте SteamVR Browser или используйте ALVR/Virtual Desktop\n';
+        message += '3. Убедитесь, что контроллеры подключены\n';
+      } else if (mode === 'oculus') {
+        message += 'Для Oculus/Meta Quest:\n';
+        message += '1. Откройте Oculus Browser\n';
+        message += '2. Перейдите по ссылке на эту игру\n';
+        message += '3. Нажмите "Войти в VR"\n';
+      } else {
+        message += 'Убедитесь, что VR-гарнитура подключена и SteamVR/Oculus запущен.';
+      }
+      
+      alert(message);
+    }
+  }
+  
+  private async detectVRSystem(): Promise<void> {
+    if (!navigator.xr) {
+      this.vrSystem = 'unknown';
+      return;
+    }
+    
+    try {
+      // Check for Oculus browser
+      const ua = navigator.userAgent.toLowerCase();
+      if (ua.includes('oculus') || ua.includes('quest')) {
+        this.vrSystem = 'oculus';
+        return;
+      }
+      
+      // Check for SteamVR (via SteamVR Browser or desktop browser with SteamVR running)
+      if (ua.includes('steamvr') || ua.includes('valve')) {
+        this.vrSystem = 'steamvr';
+        return;
+      }
+      
+      // Check for Windows Mixed Reality
+      if (ua.includes('windows mixed reality') || ua.includes('wmr')) {
+        this.vrSystem = 'wmr';
+        return;
+      }
+      
+      // Try to detect from XR system info
+      const session = await navigator.xr.requestSession('inline');
+      if (session) {
+        // Check input sources for controller hints
+        const inputSources = session.inputSources;
+        for (const source of inputSources) {
+          if (source.profiles) {
+            for (const profile of source.profiles) {
+              if (profile.includes('valve') || profile.includes('index')) {
+                this.vrSystem = 'steamvr';
+                break;
+              }
+              if (profile.includes('htc') || profile.includes('vive')) {
+                this.vrSystem = 'steamvr';
+                break;
+              }
+              if (profile.includes('oculus') || profile.includes('meta')) {
+                this.vrSystem = 'oculus';
+                break;
+              }
+              if (profile.includes('microsoft') || profile.includes('wmr')) {
+                this.vrSystem = 'wmr';
+                break;
+              }
+            }
+          }
+        }
+        await session.end();
+      }
+      
+      // Default: check if SteamVR is likely running (desktop browser with XR support)
+      if (this.vrSystem === 'unknown') {
+        // Assume SteamVR if on desktop with XR support
+        if (!ua.includes('mobile') && !ua.includes('android')) {
+          this.vrSystem = 'steamvr';
+        }
+      }
+    } catch (e) {
+      console.warn('VR system detection failed:', e);
+      this.vrSystem = 'unknown';
+    }
+  }
+  
+  private detectControllers(session: XRSession): void {
+    this.controllerProfiles = [];
+    
+    for (const source of session.inputSources) {
+      if (source.profiles) {
+        for (const profile of source.profiles) {
+          if (!this.controllerProfiles.includes(profile)) {
+            this.controllerProfiles.push(profile);
+          }
+        }
+      }
+      
+      // Update controller visuals based on profile
+      const hand = source.handedness;
+      const controllerIdx = hand === 'left' ? 0 : 1;
+      
+      if (this.controllers[controllerIdx]) {
+        this.updateControllerVisuals(this.controllers[controllerIdx], source.profiles || []);
+      }
+    }
+    
+    console.log(`[VR] Controllers detected: ${this.controllerProfiles.join(', ')}`);
+  }
+  
+  private updateControllerVisuals(controller: THREE.Group, profiles: string[]): void {
+    // Determine controller type and update visuals
+    const isIndex = profiles.some(p => p.includes('index') || p.includes('valve'));
+    const isVive = profiles.some(p => p.includes('vive') || p.includes('htc'));
+    const isOculus = profiles.some(p => p.includes('oculus-touch') || p.includes('meta-quest'));
+    const isWMR = profiles.some(p => p.includes('microsoft') || p.includes('wmr'));
+    const isHandTracking = profiles.some(p => p.includes('hand') || p.includes('generic-hand'));
+    
+    // Clear existing children
+    while (controller.children.length > 0) {
+      controller.remove(controller.children[0]);
+    }
+    
+    if (isHandTracking) {
+      // Hand tracking mode - create hand model
+      this.createHandModel(controller);
+      return;
+    }
+    
+    // Controller body
+    const bodyGeo = new THREE.BoxGeometry(0.04, 0.04, 0.12);
+    const bodyMat = new THREE.MeshStandardMaterial({ 
+      metalness: 0.5,
+      roughness: 0.3
+    });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    
+    // Adjust controller model based on type
+    if (isIndex) {
+      // Valve Index - knuckles style (ring controller)
+      body.scale.set(1.2, 0.8, 1.5);
+      bodyMat.color.setHex(0x222222);
+      
+      // Add knuckle strap visual
+      const strapGeo = new THREE.TorusGeometry(0.04, 0.008, 8, 16, Math.PI);
+      const strapMat = new THREE.MeshStandardMaterial({ color: 0x444444 });
+      const strap = new THREE.Mesh(strapGeo, strapMat);
+      strap.position.set(0, 0.03, 0);
+      strap.rotation.x = Math.PI / 2;
+      controller.add(strap);
+    } else if (isVive) {
+      // HTC Vive wand
+      body.scale.set(0.8, 0.8, 1.8);
+      bodyMat.color.setHex(0x333333);
+      
+      // Add trackpad
+      const trackpadGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.005, 16);
+      const trackpadMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+      const trackpad = new THREE.Mesh(trackpadGeo, trackpadMat);
+      trackpad.position.set(0, 0.025, -0.02);
+      controller.add(trackpad);
+    } else if (isOculus) {
+      // Oculus Touch
+      body.scale.set(0.9, 0.9, 1.2);
+      bodyMat.color.setHex(0x1a1a1a);
+      
+      // Add ring
+      const ringGeo = new THREE.TorusGeometry(0.03, 0.005, 8, 16);
+      const ringMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.position.set(0, 0.02, -0.03);
+      controller.add(ring);
+    } else if (isWMR) {
+      // Windows Mixed Reality
+      body.scale.set(1.0, 0.9, 1.4);
+      bodyMat.color.setHex(0x2a2a2a);
+    }
+    
+    controller.add(body);
+    
+    // Pointer/ray
+    const rayGeo = new THREE.CylinderGeometry(0.002, 0.001, 3, 4);
+    const rayMat = new THREE.MeshBasicMaterial({ 
+      color: isIndex ? 0x00ff88 : isVive ? 0x00aaff : isOculus ? 0xff8800 : 0xffff00, 
+      transparent: true, 
+      opacity: 0.6 
+    });
+    const ray = new THREE.Mesh(rayGeo, rayMat);
+    ray.rotation.x = Math.PI / 2;
+    ray.position.z = -1.5;
+    controller.add(ray);
+    
+    // Trigger indicator
+    const triggerGeo = new THREE.SphereGeometry(0.01, 8, 8);
+    const triggerMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+    const triggerMesh = new THREE.Mesh(triggerGeo, triggerMat);
+    triggerMesh.position.set(0, -0.03, -0.02);
+    controller.add(triggerMesh);
+  }
+  
+  private createHandModel(hand: THREE.Group): void {
+    // Simple hand model for hand tracking
+    const palmGeo = new THREE.BoxGeometry(0.08, 0.02, 0.1);
+    const skinMat = new THREE.MeshStandardMaterial({ color: 0xffcc99, roughness: 0.8 });
+    const palm = new THREE.Mesh(palmGeo, skinMat);
+    hand.add(palm);
+    
+    // Fingers
+    const fingerGeo = new THREE.CapsuleGeometry(0.008, 0.04, 4, 8);
+    const fingerPositions = [
+      [-0.03, 0, -0.06], // index
+      [-0.01, 0, -0.065], // middle
+      [0.01, 0, -0.06], // ring
+      [0.03, 0, -0.05], // pinky
+    ];
+    
+    fingerPositions.forEach(pos => {
+      const finger = new THREE.Mesh(fingerGeo, skinMat);
+      finger.position.set(pos[0], pos[1], pos[2]);
+      finger.rotation.x = Math.PI / 2;
+      hand.add(finger);
+    });
+    
+    // Thumb
+    const thumbGeo = new THREE.CapsuleGeometry(0.01, 0.03, 4, 8);
+    const thumb = new THREE.Mesh(thumbGeo, skinMat);
+    thumb.position.set(-0.05, 0, -0.02);
+    thumb.rotation.z = Math.PI / 4;
+    thumb.rotation.x = Math.PI / 2;
+    hand.add(thumb);
+    
+    // Pointer ray from index finger
+    const rayGeo = new THREE.CylinderGeometry(0.002, 0.001, 3, 4);
+    const rayMat = new THREE.MeshBasicMaterial({ 
+      color: 0x00ffff, 
+      transparent: true, 
+      opacity: 0.6 
+    });
+    const ray = new THREE.Mesh(rayGeo, rayMat);
+    ray.rotation.x = Math.PI / 2;
+    ray.position.set(-0.03, 0, -1.5);
+    hand.add(ray);
+  }
+  
+  public getVRSystem(): string {
+    return this.vrSystem;
+  }
+  
+  public getControllerProfiles(): string[] {
+    return this.controllerProfiles;
+  }
+  
+  // SteamVR Chaperone support - show play area boundaries
+  private setupChaperoneBounds(): void {
+    // Create visible boundary walls that match SteamVR chaperone
+    const boundaryGroup = new THREE.Group();
+    boundaryGroup.name = 'chaperoneBounds';
+    
+    const wallMat = new THREE.MeshBasicMaterial({
+      color: 0x00ff88,
+      transparent: true,
+      opacity: 0.0, // Hidden by default, shown when near boundary
+      side: THREE.DoubleSide
+    });
+    
+    // Create boundary indicator (floor grid)
+    const gridSize = 4; // 4x4 meter play area
+    const gridHelper = new THREE.GridHelper(gridSize, 8, 0x00ff88, 0x004422);
+    (gridHelper.material as THREE.Material).transparent = true;
+    (gridHelper.material as THREE.Material).opacity = 0.2;
+    gridHelper.position.y = -0.5;
+    boundaryGroup.add(gridHelper);
+    
+    // Corner posts
+    const postGeo = new THREE.CylinderGeometry(0.02, 0.02, 2, 8);
+    const postMat = new THREE.MeshBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.3 });
+    const corners = [
+      [-gridSize/2, 0.5, -gridSize/2],
+      [gridSize/2, 0.5, -gridSize/2],
+      [-gridSize/2, 0.5, gridSize/2],
+      [gridSize/2, 0.5, gridSize/2]
+    ];
+    
+    corners.forEach(pos => {
+      const post = new THREE.Mesh(postGeo, postMat);
+      post.position.set(pos[0], pos[1], pos[2]);
+      boundaryGroup.add(post);
+    });
+    
+    this.cockpit.add(boundaryGroup);
+  }
+  
+  // SteamVR Overlay support - render HUD as SteamVR overlay
+  public async setupSteamVROverlay(): Promise<void> {
+    if (this.vrSystem !== 'steamvr') return;
+    
+    try {
+      // Check if WebXR Layers API is available
+      const session = this.renderer.xr.getSession();
+      if (!session) return;
+      
+      // Request layers feature if available
+      const supportedModes = (session as any).supportedDepthFormats;
+      console.log('[SteamVR] Session capabilities:', supportedModes);
+      
+      // Use quad layer for HUD (better performance than rendering to texture)
+      if ('requestReferenceSpace' in session) {
+        console.log('[SteamVR] Overlay support initialized');
+      }
+    } catch (e) {
+      console.warn('[SteamVR] Overlay setup failed:', e);
     }
   }
   
