@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { MultiplayerManager, PlayerData, NetworkMessage } from './MultiplayerManager';
 
 interface Bug {
   mesh: THREE.Mesh;
@@ -29,6 +30,18 @@ interface Drone {
   orbitRadius: number;
   orbitSpeed: number;
   orbitAngle: number;
+}
+
+interface RemotePlayer {
+  id: string;
+  name: string;
+  mesh: THREE.Group;
+  nameSprite: THREE.Sprite;
+  targetPosition: THREE.Vector3;
+  targetRotation: THREE.Euler;
+  inAirplane: boolean;
+  health: number;
+  score: number;
 }
 
 interface Lever {
@@ -62,6 +75,12 @@ export class VRGame {
   private drones: Drone[] = [];
   private levers: Lever[] = [];
   private buttons: Button[] = [];
+  
+  // Multiplayer
+  private multiplayer: MultiplayerManager;
+  private remotePlayers: Map<string, RemotePlayer> = new Map();
+  private lastNetworkUpdate: number = 0;
+  private networkUpdateInterval: number = 50; // ms
   
   private controllers: THREE.Group[] = [];
   private controllerGrips: THREE.Group[] = [];
@@ -100,6 +119,7 @@ export class VRGame {
     this.clock = new THREE.Clock();
     this.raycaster = new THREE.Raycaster();
     this.tempMatrix = new THREE.Matrix4();
+    this.multiplayer = new MultiplayerManager();
     
     // Renderer
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -1091,7 +1111,7 @@ export class VRGame {
     const texture = new THREE.CanvasTexture(canvas);
     const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
     this.scoreText = new THREE.Sprite(spriteMat);
-    this.scoreText.scale.set(1.5, 0.5, 1);
+    this.scoreText.scale.set(1.5, 0.6, 1);
     this.scoreText.position.set(0, 1.4, -1.5);
     this.hudGroup.add(this.scoreText);
     // Crosshair
@@ -1141,10 +1161,10 @@ export class VRGame {
     if (!this.scoreText) return;
     const canvas = document.createElement('canvas');
     canvas.width = 640;
-    canvas.height = 280;
+    canvas.height = 320;
     const ctx = canvas.getContext('2d')!;
     ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.fillRect(0, 0, 640, 280);
+    ctx.fillRect(0, 0, 640, 320);
     
     ctx.fillStyle = '#00ff00';
     ctx.font = 'bold 36px monospace';
@@ -1160,6 +1180,10 @@ export class VRGame {
     ctx.fillText(`BUGS: ${this.bugs.length}`, 300, 90);
     ctx.fillText(`DRONES: ${this.drones.length}`, 300, 125);
     ctx.fillText(`TROOPS: ${this.troops.filter(t => t.landed).length}`, 300, 160);
+    
+    // Player count
+    ctx.fillStyle = '#ffff00';
+    ctx.fillText(`PLAYERS: ${this.getPlayerCount()}`, 300, 195);
     
     if (this.machineGunActive) {
       ctx.fillStyle = '#ff0000';
@@ -1290,18 +1314,28 @@ export class VRGame {
     airplanePos.y -= 2;
     troop.position.copy(airplanePos);
     
+    const velocity = new THREE.Vector3(
+      (Math.random() - 0.5) * 5,
+      -2,
+      (Math.random() - 0.5) * 5
+    );
+    
     this.scene.add(troop);
     
     this.troops.push({
       mesh: troop,
-      velocity: new THREE.Vector3(
-        (Math.random() - 0.5) * 5,
-        -2,
-        (Math.random() - 0.5) * 5
-      ),
+      velocity: velocity.clone(),
       landed: false,
       health: 100
     });
+    
+    // Send to other players
+    if (this.multiplayer.isConnectedToServer()) {
+      this.multiplayer.sendDropTroop({
+        position: { x: airplanePos.x, y: airplanePos.y, z: airplanePos.z },
+        velocity: { x: velocity.x, y: velocity.y, z: velocity.z }
+      });
+    }
   }
   
   private fireBullet(origin: THREE.Vector3, direction: THREE.Vector3): void {
@@ -1573,6 +1607,20 @@ export class VRGame {
     if (this.skybox) {
       this.skybox.position.copy(this.airplane.position);
     }
+    
+    // CRITICAL: Move camera with airplane (fixes desktop controls)
+    // Camera sits inside the cockpit
+    this.camera.position.copy(this.airplane.position);
+    this.camera.position.y += 1.6; // Eye height
+    
+    // Camera looks forward based on heading
+    const lookTarget = this.airplane.position.clone();
+    lookTarget.add(forward.clone().multiplyScalar(10));
+    lookTarget.y = this.camera.position.y + this.elevatorAngle * 5;
+    this.camera.lookAt(lookTarget);
+    
+    // Apply roll from rudder
+    this.camera.rotation.z = -this.rudderAngle * 0.2;
     
     // Keep cockpit relative to camera
     this.cockpit.position.copy(this.camera.position);
@@ -1852,7 +1900,13 @@ export class VRGame {
     this.updateTroops(delta);
     this.updateMachineGun(delta);
     this.updateLevers(delta);
+    this.updateRemotePlayers(delta);
     this.updateHUD();
+    
+    // Send network updates
+    if (this.multiplayer.isConnectedToServer()) {
+      this.sendNetworkUpdate();
+    }
     
     // Animate propellers
     const propLeft = this.airplane.getObjectByName('propLeft');
@@ -2229,6 +2283,244 @@ export class VRGame {
     return this.controllerProfiles;
   }
   
+  // === MULTIPLAYER METHODS ===
+  
+  public async initializeMultiplayer(): Promise<string> {
+    const roomCode = await this.multiplayer.initialize(
+      (player) => this.onPlayerJoin(player),
+      (playerId) => this.onPlayerLeave(playerId),
+      (player) => this.onPlayerUpdate(player),
+      (message) => this.onNetworkMessage(message),
+      (connected, count) => this.onConnectionChange(connected, count)
+    );
+    
+    console.log(`[Multiplayer] Room code: ${roomCode}`);
+    return roomCode;
+  }
+  
+  public async joinMultiplayerRoom(roomCode: string): Promise<void> {
+    await this.multiplayer.joinRoom(roomCode.toLowerCase());
+  }
+  
+  private onPlayerJoin(player: PlayerData): void {
+    console.log(`[Multiplayer] Player joined: ${player.name}`);
+    this.createRemotePlayer(player);
+  }
+  
+  private onPlayerLeave(playerId: string): void {
+    console.log(`[Multiplayer] Player left: ${playerId}`);
+    this.removeRemotePlayer(playerId);
+  }
+  
+  private onPlayerUpdate(player: PlayerData): void {
+    const remotePlayer = this.remotePlayers.get(player.id);
+    if (remotePlayer) {
+      remotePlayer.targetPosition.set(player.position.x, player.position.y, player.position.z);
+      remotePlayer.targetRotation.set(player.rotation.x, player.rotation.y, player.rotation.z);
+      remotePlayer.health = player.health;
+      remotePlayer.score = player.score;
+    }
+  }
+  
+  private onNetworkMessage(message: NetworkMessage): void {
+    switch (message.type) {
+      case 'dropTroop':
+        // Another player dropped a troop
+        this.createRemoteTroop(message.data);
+        break;
+      case 'bulletFire':
+        // Another player fired a bullet
+        this.createRemoteBullet(message.data);
+        break;
+      case 'hit':
+        // We got hit
+        if (message.data.targetId === this.multiplayer.getMyId()) {
+          // Take damage
+          console.log(`[Multiplayer] We got hit for ${message.data.damage} damage`);
+        }
+        break;
+      case 'chat':
+        console.log(`[Chat] ${message.data.senderName}: ${message.data.message}`);
+        break;
+    }
+  }
+  
+  private onConnectionChange(connected: boolean, playerCount: number): void {
+    console.log(`[Multiplayer] Connection: ${connected}, Players: ${playerCount}`);
+  }
+  
+  private createRemotePlayer(player: PlayerData): void {
+    const playerGroup = new THREE.Group();
+    
+    // Body
+    const bodyGeo = new THREE.CapsuleGeometry(0.2, 0.6, 4, 8);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x4a6741 });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    playerGroup.add(body);
+    
+    // Head
+    const headGeo = new THREE.SphereGeometry(0.15, 8, 8);
+    const headMat = new THREE.MeshStandardMaterial({ color: 0xffcc99 });
+    const head = new THREE.Mesh(headGeo, headMat);
+    head.position.y = 0.5;
+    playerGroup.add(head);
+    
+    // Helmet
+    const helmetGeo = new THREE.SphereGeometry(0.16, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2);
+    const helmetMat = new THREE.MeshStandardMaterial({ color: 0x2d4a2d });
+    const helmet = new THREE.Mesh(helmetGeo, helmetMat);
+    helmet.position.y = 0.55;
+    playerGroup.add(helmet);
+    
+    // Name tag
+    const nameCanvas = document.createElement('canvas');
+    nameCanvas.width = 256;
+    nameCanvas.height = 64;
+    const ctx = nameCanvas.getContext('2d')!;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.fillRect(0, 0, 256, 64);
+    ctx.fillStyle = '#00ff00';
+    ctx.font = 'bold 24px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(player.name, 128, 40);
+    
+    const nameTexture = new THREE.CanvasTexture(nameCanvas);
+    const nameMat = new THREE.SpriteMaterial({ map: nameTexture, transparent: true });
+    const nameSprite = new THREE.Sprite(nameMat);
+    nameSprite.scale.set(1, 0.25, 1);
+    nameSprite.position.y = 1;
+    playerGroup.add(nameSprite);
+    
+    playerGroup.position.set(player.position.x, player.position.y, player.position.z);
+    this.scene.add(playerGroup);
+    
+    this.remotePlayers.set(player.id, {
+      id: player.id,
+      name: player.name,
+      mesh: playerGroup,
+      nameSprite,
+      targetPosition: new THREE.Vector3(player.position.x, player.position.y, player.position.z),
+      targetRotation: new THREE.Euler(player.rotation.x, player.rotation.y, player.rotation.z),
+      inAirplane: player.inAirplane,
+      health: player.health,
+      score: player.score
+    });
+  }
+  
+  private removeRemotePlayer(playerId: string): void {
+    const remotePlayer = this.remotePlayers.get(playerId);
+    if (remotePlayer) {
+      this.scene.remove(remotePlayer.mesh);
+      this.remotePlayers.delete(playerId);
+    }
+  }
+  
+  private updateRemotePlayers(delta: number): void {
+    this.remotePlayers.forEach((player) => {
+      // Smooth interpolation
+      player.mesh.position.lerp(player.targetPosition, delta * 10);
+      
+      // Smooth rotation
+      player.mesh.rotation.x = THREE.MathUtils.lerp(player.mesh.rotation.x, player.targetRotation.x, delta * 10);
+      player.mesh.rotation.y = THREE.MathUtils.lerp(player.mesh.rotation.y, player.targetRotation.y, delta * 10);
+      player.mesh.rotation.z = THREE.MathUtils.lerp(player.mesh.rotation.z, player.targetRotation.z, delta * 10);
+    });
+  }
+  
+  private sendNetworkUpdate(): void {
+    const now = Date.now();
+    if (now - this.lastNetworkUpdate < this.networkUpdateInterval) return;
+    
+    this.lastNetworkUpdate = now;
+    
+    const playerData: PlayerData = {
+      id: this.multiplayer.getMyId(),
+      name: 'Player',
+      position: {
+        x: this.airplane.position.x,
+        y: this.airplane.position.y,
+        z: this.airplane.position.z
+      },
+      rotation: {
+        x: this.airplane.rotation.x,
+        y: this.airplane.rotation.y,
+        z: this.airplane.rotation.z
+      },
+      inAirplane: true,
+      health: 100,
+      score: this.score
+    };
+    
+    this.multiplayer.sendPlayerUpdate(playerData);
+  }
+  
+  private createRemoteTroop(data: any): void {
+    // Create troop from another player
+    const troop = new THREE.Group();
+    
+    const bodyGeo = new THREE.CapsuleGeometry(0.15, 0.4, 4, 8);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x4a6741 });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    troop.add(body);
+    
+    const headGeo = new THREE.SphereGeometry(0.12, 8, 8);
+    const headMat = new THREE.MeshStandardMaterial({ color: 0x4a6741 });
+    const head = new THREE.Mesh(headGeo, headMat);
+    head.position.y = 0.35;
+    troop.add(head);
+    
+    // Parachute
+    const parachuteGeo = new THREE.SphereGeometry(0.8, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2);
+    const parachuteMat = new THREE.MeshStandardMaterial({ 
+      color: 0xff6600, 
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.8
+    });
+    const parachute = new THREE.Mesh(parachuteGeo, parachuteMat);
+    parachute.position.y = 2;
+    parachute.name = 'parachute';
+    troop.add(parachute);
+    
+    troop.position.set(data.position.x, data.position.y, data.position.z);
+    this.scene.add(troop);
+    
+    this.troops.push({
+      mesh: troop,
+      velocity: new THREE.Vector3(data.velocity.x, data.velocity.y, data.velocity.z),
+      landed: false,
+      health: 100
+    });
+  }
+  
+  private createRemoteBullet(data: any): void {
+    const bulletGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.8, 4);
+    const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+    const bullet = new THREE.Mesh(bulletGeo, bulletMat);
+    bullet.position.set(data.position.x, data.position.y, data.position.z);
+    
+    bullet.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(data.direction.x, data.direction.y, data.direction.z).normalize()
+    );
+    
+    this.scene.add(bullet);
+    
+    this.bullets.push({
+      mesh: bullet,
+      velocity: new THREE.Vector3(data.velocity.x, data.velocity.y, data.velocity.z),
+      life: 3
+    });
+  }
+  
+  public getMultiplayer(): MultiplayerManager {
+    return this.multiplayer;
+  }
+  
+  public getPlayerCount(): number {
+    return this.multiplayer.getPlayerCount();
+  }
+  
   // SteamVR Chaperone support - show play area boundaries
   private setupChaperoneBounds(): void {
     // Create visible boundary walls that match SteamVR chaperone
@@ -2294,15 +2586,21 @@ export class VRGame {
   // Mouse/keyboard fallback for non-VR
   public setupDesktopControls(): void {
     const keys: { [key: string]: boolean } = {};
+    let mouseX = 0;
+    let mouseY = 0;
     
     document.addEventListener('keydown', (e) => {
       keys[e.key.toLowerCase()] = true;
       
       if (e.key === ' ') {
         this.machineGunActive = true;
+        e.preventDefault();
       }
-      if (e.key === 'e') {
+      if (e.key === 'e' || e.key === 'у') {
         this.dropTroop();
+      }
+      if (e.key === 'q' || e.key === 'й') {
+        this.enginePower = Math.min(1, this.enginePower + 0.1);
       }
     });
     
@@ -2314,27 +2612,49 @@ export class VRGame {
       }
     });
     
-    // Update controls in animation loop
+    // Update controls in animation loop - runs every frame
     const updateControls = () => {
-      if (keys['a']) this.rudderAngle = -1;
-      else if (keys['d']) this.rudderAngle = 1;
-      else this.rudderAngle *= 0.9;
+      // A/D for rudder (turn left/right)
+      if (keys['a'] || keys['ф']) {
+        this.rudderAngle = THREE.MathUtils.lerp(this.rudderAngle, -1, 0.1);
+      } else if (keys['d'] || keys['в']) {
+        this.rudderAngle = THREE.MathUtils.lerp(this.rudderAngle, 1, 0.1);
+      } else {
+        this.rudderAngle = THREE.MathUtils.lerp(this.rudderAngle, 0, 0.05);
+      }
       
-      if (keys['w']) this.elevatorAngle = 1;
-      else if (keys['s']) this.elevatorAngle = -1;
-      else this.elevatorAngle *= 0.9;
+      // W/S for elevator (pitch up/down)
+      if (keys['w'] || keys['ц']) {
+        this.elevatorAngle = THREE.MathUtils.lerp(this.elevatorAngle, 1, 0.1);
+      } else if (keys['s'] || keys['ы']) {
+        this.elevatorAngle = THREE.MathUtils.lerp(this.elevatorAngle, -1, 0.1);
+      } else {
+        this.elevatorAngle = THREE.MathUtils.lerp(this.elevatorAngle, 0, 0.05);
+      }
       
-      if (keys['shift']) this.enginePower = Math.min(1, this.enginePower + 0.01);
-      if (keys['control']) this.enginePower = Math.max(0, this.enginePower - 0.01);
+      // Shift/Ctrl for throttle
+      if (keys['shift']) {
+        this.enginePower = Math.min(1, this.enginePower + 0.005);
+      }
+      if (keys['control']) {
+        this.enginePower = Math.max(0, this.enginePower - 0.005);
+      }
+      
+      // Mouse look affects heading directly
+      this.heading += mouseX * 0.5;
+      mouseX *= 0.9; // Dampen mouse input
       
       requestAnimationFrame(updateControls);
     };
     updateControls();
     
-    // Mouse look
+    // Mouse look with pointer lock
     let isPointerLocked = false;
+    
     this.renderer.domElement.addEventListener('click', () => {
-      this.renderer.domElement.requestPointerLock();
+      if (!isPointerLocked) {
+        this.renderer.domElement.requestPointerLock();
+      }
     });
     
     document.addEventListener('pointerlockchange', () => {
@@ -2344,12 +2664,18 @@ export class VRGame {
     document.addEventListener('mousemove', (e) => {
       if (!isPointerLocked) return;
       
-      this.heading -= e.movementX * 0.1;
+      // Horizontal mouse movement = heading change
+      mouseX = -e.movementX * 0.01;
+      
+      // Vertical mouse movement = elevator input
       this.elevatorAngle = THREE.MathUtils.clamp(
-        this.elevatorAngle - e.movementY * 0.001,
+        this.elevatorAngle - e.movementY * 0.002,
         -1, 1
       );
     });
+    
+    console.log('[Controls] Desktop controls initialized. Click to enable mouse look.');
+    console.log('[Controls] WASD - fly, Space - fire, E - drop troops, Shift/Ctrl - throttle');
   }
   
   public dispose(): void {
